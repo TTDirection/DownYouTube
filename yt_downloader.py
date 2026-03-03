@@ -13,7 +13,7 @@ def get_common_opts():
     node_path = shutil.which('node')
     if node_path:
         opts['js_runtimes'] = {'node': {'path': node_path}}
-        opts['remote_components'] = ['ejs:github']   # ← 加这一行
+        opts['remote_components'] = ['ejs:github']
     return opts
 
 
@@ -37,11 +37,15 @@ class DownloadThread(QThread):
 
     def run(self):
         try:
+            ffmpeg_path = shutil.which('ffmpeg')
+
             ydl_opts = {
                 **get_common_opts(),
-                'format': f'{self.format_id}[protocol!=m3u8][protocol!=m3u8_native]+bestaudio[protocol!=m3u8][protocol!=m3u8_native]/best[protocol!=m3u8][protocol!=m3u8_native]',
+                # ✅ 优先选 m4a（AAC）音频，Windows 媒体播放器原生支持
+                'format': f'{self.format_id}+bestaudio[ext=m4a]/bestaudio/best',
                 'outtmpl': '%(title)s.%(ext)s',
                 'merge_output_format': 'mp4',
+                'ffmpeg_location': ffmpeg_path,
                 'fragment_retries': 10,
                 'retries': 10,
                 'progress_hooks': [self.progress_hook],
@@ -50,7 +54,6 @@ class DownloadThread(QThread):
                 ydl_opts['cookiefile'] = self.cookie_file
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.cache.remove()
                 ydl.download([self.url])
 
             self.progress.emit(100)
@@ -71,18 +74,33 @@ class App(QWidget):
         layout = QVBoxLayout()
         layout.setSpacing(10)
 
+        # Node.js 状态
         node_path = shutil.which('node')
         if node_path:
-            node_label = QLabel(f"Node.js 已就绪：{node_path}")
+            node_label = QLabel(f"✅ Node.js 已就绪：{node_path}")
             node_label.setStyleSheet(
-                "background:#d4edda; color:#155724; padding:6px; border-radius:4px; font-size:11px;")
+                "background:#d4edda;color:#155724;padding:6px;border-radius:4px;font-size:11px;")
         else:
-            node_label = QLabel("未检测到 Node.js！请安装后重启程序：https://nodejs.org")
+            node_label = QLabel("⚠️ 未检测到 Node.js！请安装：https://nodejs.org 安装后重启程序")
             node_label.setStyleSheet(
-                "background:#fff3cd; color:#856404; padding:6px; border-radius:4px; font-size:11px;")
+                "background:#f8d7da;color:#721c24;padding:6px;border-radius:4px;font-size:11px;")
         node_label.setWordWrap(True)
         layout.addWidget(node_label)
 
+        # ffmpeg 状态
+        ffmpeg_path = shutil.which('ffmpeg')
+        if ffmpeg_path:
+            ff_label = QLabel(f"✅ ffmpeg 已就绪：{ffmpeg_path}")
+            ff_label.setStyleSheet(
+                "background:#d4edda;color:#155724;padding:6px;border-radius:4px;font-size:11px;")
+        else:
+            ff_label = QLabel("⚠️ 未检测到 ffmpeg！音视频无法合并，请确认已加入 PATH 并重启")
+            ff_label.setStyleSheet(
+                "background:#f8d7da;color:#721c24;padding:6px;border-radius:4px;font-size:11px;")
+        ff_label.setWordWrap(True)
+        layout.addWidget(ff_label)
+
+        # URL 输入
         layout.addWidget(QLabel("视频链接:"))
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText('粘贴 YouTube 链接...')
@@ -92,11 +110,13 @@ class App(QWidget):
         self.btn_analyze.clicked.connect(self.analyze_video)
         layout.addWidget(self.btn_analyze)
 
+        # 分辨率
         layout.addWidget(QLabel("选择分辨率/格式:"))
         self.res_combo = QComboBox()
         layout.addWidget(self.res_combo)
 
-        cookie_group = QGroupBox("Cookie 设置（公开视频无需设置；年龄限制视频才需要）")
+        # Cookie
+        cookie_group = QGroupBox("Cookie 设置（下载需要，必须选择）")
         cookie_layout = QVBoxLayout()
         cookie_layout.setSpacing(6)
 
@@ -104,8 +124,8 @@ class App(QWidget):
         self.btn_pick_cookie = QPushButton("选择 Cookie 文件 (.txt)")
         self.btn_pick_cookie.clicked.connect(self.pick_cookie_file)
         file_row.addWidget(self.btn_pick_cookie)
-        self.cookie_path_label = QLabel("未选择（不使用 Cookie）")
-        self.cookie_path_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.cookie_path_label = QLabel("未选择")
+        self.cookie_path_label.setStyleSheet("color:gray;font-size:11px;")
         file_row.addWidget(self.cookie_path_label)
         self.btn_clear_cookie = QPushButton("清除")
         self.btn_clear_cookie.setFixedWidth(50)
@@ -115,20 +135,21 @@ class App(QWidget):
 
         hint = QLabel(
             "导出方法：Chrome/Edge 安装扩展 \"Get cookies.txt LOCALLY\"，\n"
-            "打开 YouTube 后点击扩展图标 → 导出当前站点 → 保存 .txt，然后在此选择。\n"
-            "（新版 Chrome/Edge 加密了本地 Cookie 数据库，只能用此文件导出方式）"
+            "打开 YouTube 后点击扩展图标 → 导出当前站点 → 保存 .txt，然后在此选择。"
         )
-        hint.setStyleSheet("color: gray; font-size: 10px;")
+        hint.setStyleSheet("color:gray;font-size:10px;")
         hint.setWordWrap(True)
         cookie_layout.addWidget(hint)
         cookie_group.setLayout(cookie_layout)
         layout.addWidget(cookie_group)
 
+        # 进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
+        # 下载按钮
         self.btn_download = QPushButton('开始下载')
         self.btn_download.setEnabled(False)
         self.btn_download.clicked.connect(self.start_download)
@@ -136,24 +157,23 @@ class App(QWidget):
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("font-size: 11px; color: #555;")
+        self.status_label.setStyleSheet("font-size:11px;color:#555;")
         layout.addWidget(self.status_label)
 
         self.setLayout(layout)
 
     def pick_cookie_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 Cookie 文件", "", "Cookie Files (*.txt);;All Files (*)"
-        )
+            self, "选择 Cookie 文件", "", "Cookie Files (*.txt);;All Files (*)")
         if path:
             self.cookie_file_path = path
             self.cookie_path_label.setText(os.path.basename(path))
-            self.cookie_path_label.setStyleSheet("color: green; font-size: 11px;")
+            self.cookie_path_label.setStyleSheet("color:green;font-size:11px;")
 
     def clear_cookie(self):
         self.cookie_file_path = ''
-        self.cookie_path_label.setText("未选择（不使用 Cookie）")
-        self.cookie_path_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.cookie_path_label.setText("未选择")
+        self.cookie_path_label.setStyleSheet("color:gray;font-size:11px;")
 
     def analyze_video(self):
         url = self.url_input.text().strip()
@@ -174,7 +194,10 @@ class App(QWidget):
             self.res_combo.clear()
             seen_res = set()
             video_formats = sorted(
-                [f for f in formats if f.get('height') and f.get('vcodec') != 'none' and f.get('protocol') not in ('m3u8', 'm3u8_native')],
+                [f for f in formats
+                 if f.get('height')
+                 and f.get('vcodec') != 'none'
+                 and f.get('protocol') not in ('m3u8', 'm3u8_native')],
                 key=lambda x: (x.get('height', 0), x.get('fps') or 0),
                 reverse=True
             )
@@ -197,9 +220,10 @@ class App(QWidget):
             if self.res_combo.count() > 0:
                 self.btn_download.setEnabled(True)
                 title = info.get('title', '')[:50]
-                self.status_label.setText(f"解析成功：{title}\n共 {self.res_combo.count()} 个分辨率可选")
+                self.status_label.setText(
+                    f"解析成功：{title}\n共 {self.res_combo.count()} 个分辨率可选")
             else:
-                QMessageBox.warning(self, "警告", "未找到可用视频格式，请确认 Node.js 已安装并重启程序。")
+                QMessageBox.warning(self, "警告", "未找到可用视频格式。")
         except Exception as e:
             QMessageBox.critical(self, "解析错误", str(e))
             self.status_label.setText("")
@@ -208,13 +232,22 @@ class App(QWidget):
             self.btn_analyze.setEnabled(True)
 
     def start_download(self):
+        if not self.cookie_file_path:
+            ret = QMessageBox.question(
+                self, "未选择 Cookie",
+                "未选择 Cookie 文件，可能导致下载失败。\n是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if ret == QMessageBox.StandardButton.No:
+                return
+
         url = self.url_input.text().strip()
         format_id = self.res_combo.currentData()
         self.btn_download.setEnabled(False)
         self.btn_download.setText("正在下载...")
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
-        self.status_label.setText("下载中，请稍候…")
+        self.status_label.setText("下载中（会先下载视频和音频，最后自动合并为 mp4）…")
 
         self.thread = DownloadThread(url, format_id, self.cookie_file_path)
         self.thread.done.connect(self.on_success)
@@ -224,18 +257,20 @@ class App(QWidget):
 
     def on_success(self, msg):
         QMessageBox.information(self, "完成", msg)
-        self.status_label.setText(msg)
+        self.status_label.setText("✅ " + msg)
         self.reset_ui()
 
     def on_error(self, msg):
         tips = "建议：\n"
-        if 'format' in msg.lower():
-            tips += "• 重新点击「解析视频信息」后再下载\n"
-        if '403' in msg or 'forbidden' in msg.lower():
-            tips += "• 导出浏览器 Cookie 文件后重试\n"
+        if 'ffmpeg' in msg.lower():
+            tips += "• ffmpeg 未找到，请确认已安装并加入系统 PATH，然后重启程序\n"
+        elif '403' in msg or 'forbidden' in msg.lower():
+            tips += "• Cookie 已过期，请重新从浏览器导出后重试\n"
+        elif 'format' in msg.lower():
+            tips += "• 请重新点击「解析视频信息」后再下载\n"
         tips += "• 确认视频链接可以正常访问"
         QMessageBox.critical(self, "下载失败", msg + "\n\n" + tips)
-        self.status_label.setText("下载失败")
+        self.status_label.setText("❌ 下载失败")
         self.reset_ui()
 
     def reset_ui(self):
